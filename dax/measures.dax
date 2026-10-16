@@ -1,0 +1,120 @@
+// Superstore profitability dashboard: DAX measures
+// All measures read from one table, Superstore, and are stored in a _Measures table.
+
+
+// ---------- Core ----------
+
+Total Sales = SUM ( Superstore[Sales] )
+
+Total Profit = SUM ( Superstore[Profit] )
+
+Total Quantity = SUM ( Superstore[Quantity] )
+
+Order Lines = COUNTROWS ( Superstore )
+
+Profit Margin % = DIVIDE ( [Total Profit], [Total Sales] )
+
+Avg Sales per Line = DIVIDE ( [Total Sales], [Order Lines] )
+
+Profit per Unit = DIVIDE ( [Total Profit], [Total Quantity] )
+
+
+// ---------- Comparisons ----------
+
+// Share of whatever is currently selected (e.g. one region's share of all regions)
+Sales % of Total = DIVIDE ( [Total Sales], CALCULATE ( [Total Sales], ALLSELECTED () ) )
+
+Profit % of Total = DIVIDE ( [Total Profit], CALCULATE ( [Total Profit], ALLSELECTED () ) )
+
+// Margin for the whole company, ignoring all filters
+Company Margin % = CALCULATE ( [Profit Margin %], REMOVEFILTERS () )
+
+// Gap to company margin in percentage points. Format string: +0.0" pp";-0.0" pp"
+Margin vs Company Avg (pp) = ( [Profit Margin %] - [Company Margin %] ) * 100
+
+
+// ---------- Discount ----------
+
+// Sales is the amount after discount, so the full price is Sales / (1 - Discount)
+Gross Sales = SUMX ( Superstore, DIVIDE ( Superstore[Sales], 1 - Superstore[Discount] ) )
+
+// Money given away in discounts
+Discount Value = [Gross Sales] - [Total Sales]
+
+// Discount as a share of full price, weighted by order size
+Weighted Discount % = DIVIDE ( [Discount Value], [Gross Sales] )
+
+// Profit on orders discounted 30% or more (negative overall)
+Profit Lost to Deep Discounts = CALCULATE ( [Total Profit], Superstore[Discount] >= 0.3 )
+
+
+// ---------- Loss-makers ----------
+
+Loss Lines = CALCULATE ( [Order Lines], Superstore[Profit] < 0 )
+
+Loss Line % = DIVIDE ( [Loss Lines], [Order Lines] )
+
+Loss Value = CALCULATE ( [Total Profit], Superstore[Profit] < 0 )
+
+Loss-making States =
+    COUNTROWS ( FILTER ( VALUES ( Superstore[State] ), [Total Profit] < 0 ) )
+
+Loss-making Sub-Categories =
+    COUNTROWS ( FILTER ( VALUES ( Superstore[Sub-Category] ), [Total Profit] < 0 ) )
+
+Profit Rank Sub-Cat =
+    RANKX ( ALLSELECTED ( Superstore[Sub-Category] ), [Total Profit], , DESC, DENSE )
+
+
+// ---------- What-if discount cap ----------
+
+// Created with Modeling > New parameter > Numeric range (0 to 0.8, step 0.05, default 0.2).
+// Power BI generates these two automatically:
+//   'Discount Cap' = GENERATESERIES ( 0, 0.8, 0.05 )
+//   Discount Cap Value = SELECTEDVALUE ( 'Discount Cap'[Discount Cap], 0.2 )
+
+// Profit if every order above the cap had been sold at the cap instead.
+// Assumes customers buy the same amount, so this is the best case.
+Simulated Profit =
+VAR Cap = [Discount Cap Value]
+RETURN
+    SUMX (
+        Superstore,
+        VAR d = Superstore[Discount]
+        VAR Gross = DIVIDE ( Superstore[Sales], 1 - d )
+        RETURN Superstore[Profit] + IF ( d > Cap, Gross * ( d - Cap ), 0 )
+    )
+
+Profit Uplift = [Simulated Profit] - [Total Profit]
+
+
+// ---------- Colour and text ----------
+
+// Used for conditional formatting: red = loss, amber = under 10%, green = 10% or more
+Margin Colour =
+SWITCH ( TRUE (),
+    [Profit Margin %] < 0,    "#B23A3A",
+    [Profit Margin %] < 0.10, "#C98A2B",
+    "#2F7D5B"
+)
+
+// Title for the drill-through page, e.g. "Texas - margin -15.1%"
+Location Title =
+    SELECTEDVALUE ( Superstore[State], "All states" )
+        & " - margin " & FORMAT ( [Profit Margin %], "0.0%" )
+
+// One-line summary on the Overview page that updates with the filters
+Headline Insight =
+VAR WorstSub =
+    MAXX ( TOPN ( 1, ALLSELECTED ( Superstore[Sub-Category] ), [Total Profit], ASC ), Superstore[Sub-Category] )
+VAR WorstProfit = MINX ( ALLSELECTED ( Superstore[Sub-Category] ), [Total Profit] )
+RETURN
+    "Margin is " & FORMAT ( [Profit Margin %], "0.0%" )
+        & ". Lines discounted 30%+ net " & FORMAT ( [Profit Lost to Deep Discounts], "$#,0;-$#,0" )
+        & ". Weakest sub-category: " & WorstSub & " (" & FORMAT ( WorstProfit, "$#,0;-$#,0" ) & ")."
+
+
+// ---------- Calculated column (on the Superstore table) ----------
+
+// Helps the map place states correctly. Data category: State or Province
+// State Location = Superstore[State] & ", USA"
